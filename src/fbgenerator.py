@@ -3,11 +3,8 @@ import math
 import os
 import sys
 import xml.etree.ElementTree as ET
-
-default_enum_values = {}
-
-
 import argparse
+from re import sub
 
 def parse_arguments():
     """
@@ -22,121 +19,88 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def guess_type_from_min_max(min_enum_value_arg, max_enum_value_arg):
-    if (min_enum_value_arg <= 127):
-        if (min_enum_value_arg >= 0):
-           result = 'ubyte'
-        else:
-           result = 'byte'
-    elif (max_enum_value_arg <= 32767):
-        if (min_enum_value_arg >= 0):
-            result = 'ushort'
-        else:
-            result = 'short'
-    elif (min_enum_value_arg >= 0):
-        result = 'uint64'
-    else:
-        result = 'int64'
+# Define a function to convert a string to camel case
+def camel_case(s):
+    # Use regular expression substitution to replace underscores and hyphens with spaces,
+    # then title case the string (capitalize the first letter of each word), and remove spaces
+    s = sub(r"(_|-)+", " ", s).title().replace(" ", "")
 
-    return result
+    # Join the string, ensuring the first letter is lowercase
+    return ''.join([s[0].lower(), s[1:]])
 
 
-def extract_enum_info(filename_arg, fbsfile_arg,enum_element_arg):
-    line_count = 0;
-    description = enum_element_arg.find('description')
-    min_enum_value = math.nan 
-    max_enum_value = math.nan 
-    min_enum_id = ''
-    enum_name = enum_element_arg.get('name')
-    enum_definition = ''
+
+def process_command(entry_name_arg, param_list_arg, fbsfile_arg):
+    print(f"\t\t- Generating the command {entry_name_arg}")
     
-    if ( default_enum_values.get(filename_arg) == None ):
-        default_enum_values[filename_arg] = {}    
+    # Writes the beginning of the table
+    fbsfile_arg.write(f"\n\n// Command {entry_name_arg}\n")
+    fbsfile_arg.write(f"table {entry_name_arg} {{\n")
+    
+    # Creates the table field declarations
+    for param in param_list_arg:
+        param_index = param.get('index')
+        param_label = param.get('label')
+        param_min_value = param.get('minValue')
+        param_max_value = param.get('maxValue')
+        param_increment = param.get('increment')
+        param_units = param.get('units')
+        param_description = param.text
 
-    if ( description != None):
-        cleaned_description = description.text.replace('\n', '\n//');
+        if (param_description != None):
+            fbsfile_arg.write("\t// " + param_description.replace('\n', '\n\t//') + "\n")
+            
+        if ( param_min_value != None):
+            fbsfile_arg.write(f"\t// minValue: {param_min_value};\n")    
 
-        fbsfile_arg.write(f"// {cleaned_description}\n")
+        if ( param_max_value != None):
+            fbsfile_arg.write(f"\t// maxValue: {param_max_value};\n")
+            
+        if ( param_increment != None): 
+            fbsfile_arg.write(f"\t// increment: {param_increment};\n")
+            
+        if ( param_units != None):
+            fbsfile_arg.write(f"\t// units: {param_units};\n")
+                
+        if ( param_label == None):
+            param_label = f"param{param_index}"
 
-    for field_element in enum_element_arg.findall('entry'):
-        value = int(field_element.get('value', ''));
+        fbsfile_arg.write(f"\t{camel_case(param_label)}:float;\n")
 
-        if ( line_count > 0):
-            enum_definition = enum_definition + ",\n"
+    # Writes the end of the table           
+    fbsfile_arg.write("}\n\n")       
+    
+    
 
-        enum_definition = enum_definition + (f"   {field_element.get('name')}={field_element.get('value', '')}")
+def process_enum(filename_arg, fbsfile_arg, enum_element_arg, default_enum_values_map_arg):
+    entry_list = enum_element_arg.findall('entry')
 
-        if ( math.isnan(min_enum_value) or  (value < min_enum_value)):
-            min_enum_value = value
-            min_enum_id = field_element.get('name')        
+    if (default_enum_values_map_arg.get(filename_arg) == None):
+        default_enum_values_map_arg[filename_arg] = {}
 
-        if ( math.isnan(max_enum_value) ):
-            max_enum_value = value
+    if (entry_list != None and len(entry_list) > 0):
+        description = enum_element_arg.find('description')
+        enum_definition_list = []
+        command_definition_list = []
+        enum_name = enum_element_arg.get('name')
 
-        max_enum_value = max(max_enum_value, value)
+        if (description != None):
+           cleaned_description = description.text.replace('\n', '\n//')
+           fbsfile_arg.write(f"// {cleaned_description}\n")
 
-        line_count = line_count + 1
-
-    enum_type = guess_type_from_min_max(min_enum_value, max_enum_value)
-    fbsfile_arg.write(f"enum {enum_name} : {enum_type}")
-    fbsfile_arg.write("\n{\n")
-    fbsfile_arg.write(enum_definition)
-    fbsfile_arg.write("\n}\n\n")
-
-    default_enum_values[filename_arg][enum_name] = min_enum_id
+        for entry in entry_list:
+            entry_name= entry.get('name')
+            param_list = entry.findall('param')
+        
+            if (param_list != None and len(param_list) > 0):
+               process_command(entry_name, param_list, fbsfile_arg)
+            else:    
+               print(f"\t\t- Generating the enum entry {enum_name}/{entry_name}")
 
     fbsfile_arg.write("\n")
 
 
-def extract_message_info(file_arg, message_element_arg, default_enum_values_map_arg):
-    description = message_element_arg.find('description')
-
-    if ( description != None ):
-        cleaned_description = description.text.replace('\n', '\n//');
-
-        file_arg.write(f"// {cleaned_description}\n")
-
-    file_arg.write(f"table {message_element_arg.get('name')}")
-    file_arg.write(" {\n")
-    file_arg.write(f"   _id:uint = {message_element_arg.get('id')};\n")
-    file_arg.write("\n")
-
-    for field_element in message_element_arg.findall('field'):
-        file_arg.write(f"   // {field_element.text}\n")
-
-        if (not field_element.get('enum', '').strip()):
-            field_type = field_element.get('type').replace('uint8_t', 'ubyte') \
-                                                  .replace('int8_t', 'byte') \
-                                                  .replace('uint16_t', 'ushort') \
-                                                  .replace('int16_t', 'short') \
-                                                  .replace('uint32_t', 'uint') \
-                                                  .replace('int32_t', 'int') \
-                                                  .replace('float32_t', 'float') \
-                                                  .replace('uint64_t', 'uint64') \
-                                                  .replace('int64_t', 'int64') \
-                                                  .replace('float64_t', 'float64')
-
-            # Test if it is an array
-            if ( "[" in field_type ):
-                field_type = "[" + field_type.replace('[','')
-
-            file_arg.write(f"   {field_element.get('name')}:{field_type};\n")
-        else:
-            enum_name = field_element.get('enum', '')
-
-            file_arg.write(
-                f"   {field_element.get('name')}:{enum_name} = {default_enum_values_map_arg[enum_name]};\n")
-
-    file_arg.write("}\n\n")
-
-def xml_to_flatbuffers(root_node_arg, flatbuffer_file_arg, all_default_values_arg):
-    # Extract information from messages
-    for message_element in root_node_arg.findall('.//messages/message'):
-        extract_message_info(flatbuffer_file_arg,
-                             message_element, all_default_values_arg)
-
-
-def prepare_files(include_map_arg, input_dir_arg, output_dir_arg):
+def prepare_files(include_map_arg, default_enum_values_map_arg,input_dir_arg, output_dir_arg):
     # Iterate through XML files in the specified folder
     for filename in os.listdir(input_dir_arg):
         if filename.endswith(".xml"):
@@ -148,11 +112,13 @@ def prepare_files(include_map_arg, input_dir_arg, output_dir_arg):
             flatbuffer_filename = os.path.join(
                 output_dir_arg, f"{filename}.fbs")
 
+            print(f"\t- Preparing the flatbutffer file for {filename}")
+
             # Write the values to a file
             with open(flatbuffer_filename, 'w') as fbsfile:
                include_values = [
                    include.text for include in root.findall('.//include')]
-               
+
                for value in include_values:
                    include_filename = value.replace('.xml', '')
 
@@ -164,44 +130,19 @@ def prepare_files(include_map_arg, input_dir_arg, output_dir_arg):
 
                # Extract information from enums
                for enum_element in root.findall('.//enum'):
-                   extract_enum_info(filename, fbsfile, enum_element)
-               
+                   process_enum(filename, fbsfile, enum_element, default_enum_values_map_arg)
+
                include_map_arg[filename] = include_list
-
-
-def convert_xml_files(include_map_arg, input_dir_arg, output_dir_arg):
-    for filename in os.listdir(input_dir_arg):
-        if filename.endswith(".xml"):
-            # Parse the XML data from the file
-            tree = ET.parse(os.path.join(input_dir_arg, filename))
-            root = tree.getroot()
-            filename = filename.replace('.xml', '')
-            include_map = include_map_arg[filename]
-            all_default_values = {}
-            flatbuffer_filename = os.path.join(
-                output_dir_arg, f'{filename}.fbs')
-
-            if ( default_enum_values.get(filename) != None ):
-               all_default_values = default_enum_values[filename]
-               
-            for include in include_map:
-                if (default_enum_values.get(include) != None):
-                   all_default_values = {**all_default_values, **default_enum_values[include]}
-            
-            print(f"\t- Converting {filename}.xml")
-            with open(flatbuffer_filename, 'a') as file:
-                xml_to_flatbuffers(root, file, all_default_values)
 
 
 def main():
     # Parse command-line arguments
     args = parse_arguments()
-    include_map = {}
+    flattened_include_map = {}
+    default_enum_values_map_arg = {}
 
     print("Starting the XML conversion")
-
-    prepare_files(include_map, args.input, args.output)
-    convert_xml_files(include_map, args.input, args.output)
+    prepare_files(flattened_include_map, default_enum_values_map_arg, args.input, args.output)
 
 
 if __name__ == "__main__":
